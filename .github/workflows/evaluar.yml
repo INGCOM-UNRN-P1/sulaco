@@ -1,0 +1,129 @@
+# Devolución automática en cada push de una entrega (sulaco §evaluar).
+#
+# Workflow reutilizable: el repo de la entrega (GitHub Classroom) lo llama con
+#
+#   jobs:
+#     evaluar:
+#       uses: INGCOM-UNRN-P1/sulaco/.github/workflows/evaluar.yml@v0.1.0
+#       permissions:
+#         contents: read
+#         pull-requests: write      # solo si comentar: true
+#         security-events: write    # solo si sarif: true
+#
+# Instala las herramientas del perfil con mother (siempre desde git), corre
+# `ripley check` sobre la entrega y publica la devolución en el resumen del
+# job; en los pull requests (p. ej. el de feedback de Classroom) también como
+# comentario. Con `bloqueante: true` el job falla si ripley encuentra errores.
+name: Evaluar entrega
+
+on:
+  workflow_call:
+    inputs:
+      ruta:
+        description: Archivo .c o carpeta del proyecto a verificar.
+        type: string
+        default: "."
+      perfil_ripley:
+        description: Rigurosidad de ripley (strict, relaxed o exam).
+        type: string
+        default: strict
+      perfil_mother:
+        description: Perfil de herramientas a instalar con mother.
+        type: string
+        default: estudiante
+      mother_ref:
+        description: Tag o commit de mother (el manifiesto fija el de cada herramienta).
+        type: string
+        default: main
+      comentar:
+        description: Publicar la devolución como comentario en los pull requests.
+        type: boolean
+        default: true
+      sarif:
+        description: Subir los hallazgos como SARIF (anotaciones en el código).
+        type: boolean
+        default: false
+      bloqueante:
+        description: Marcar el commit en rojo si ripley encuentra errores.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  evaluar:
+    name: Devolución de ripley
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Instalar uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Herramientas del sistema
+        run: sudo apt-get install -y --no-install-recommends gcc gdb valgrind
+
+      - name: Instalar el perfil con mother (desde git)
+        env:
+          PERFIL: ${{ inputs.perfil_mother }}
+          MOTHER_REF: ${{ inputs.mother_ref }}
+        run: |
+          uvx --from "git+https://github.com/INGCOM-UNRN-P1/mother@${MOTHER_REF}" mother instalar --perfil "$PERFIL"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Diagnóstico del entorno
+        run: ripley doctor || true
+
+      - name: Verificar la entrega
+        id: ripley
+        env:
+          RUTA: ${{ inputs.ruta }}
+          PERFIL: ${{ inputs.perfil_ripley }}
+        run: |
+          set +e
+          ripley check "$RUTA" --profile "$PERFIL" --md devolucion.md --quiet
+          echo "codigo=$?" >> "$GITHUB_OUTPUT"
+          set -e
+          if [ -s devolucion.md ]; then
+            cat devolucion.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "ripley no generó la devolución (ver el log del paso)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: SARIF para anotaciones en el código
+        if: inputs.sarif
+        env:
+          RUTA: ${{ inputs.ruta }}
+          PERFIL: ${{ inputs.perfil_ripley }}
+        run: ripley check "$RUTA" --profile "$PERFIL" --format sarif --exit-zero > ripley.sarif
+
+      - uses: github/codeql-action/upload-sarif@v3
+        if: inputs.sarif
+        with:
+          sarif_file: ripley.sarif
+          category: ripley
+
+      - name: Comentar en el pull request
+        if: inputs.comentar && github.event_name == 'pull_request' && hashFiles('devolucion.md') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: gh pr comment "$PR" --body-file devolucion.md --repo "$GITHUB_REPOSITORY"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: devolucion-ripley
+          path: |
+            devolucion.md
+            ripley.sarif
+          if-no-files-found: ignore
+
+      - name: Resultado
+        if: inputs.bloqueante && steps.ripley.outputs.codigo != '0'
+        run: |
+          echo "::error title=ripley::La entrega tiene errores (código ${{ steps.ripley.outputs.codigo }}); ver la devolución."
+          exit 1

@@ -1,0 +1,109 @@
+# Auditoría forense de un examen supervisado con uatu (sulaco §proctoring).
+#
+# Workflow reutilizable a partir de la plantilla uatu/templates/exam-repo: el
+# repo del examen lo llama con
+#
+#   on:
+#     workflow_dispatch:
+#       inputs:
+#         target_user:
+#           description: Usuario a auditar (vacío para todos)
+#           default: ""
+#   jobs:
+#     auditar:
+#       uses: INGCOM-UNRN-P1/sulaco/.github/workflows/proctoring.yml@v0.1.0
+#       with:
+#         target_user: ${{ inputs.target_user }}
+#       secrets:
+#         clave_publica: ${{ secrets.UATU_TEACHER_PUBLIC_KEY }}
+#         clave_privada: ${{ secrets.UATU_TEACHER_PRIVATE_KEY }}
+#
+# Códigos de uatu-audit: 0 limpia, 2 cadena íntegra con alertas heurísticas
+# (aviso), otro valor falla de integridad criptográfica (el job falla).
+name: Auditoría forense (uatu)
+
+on:
+  workflow_call:
+    inputs:
+      target_user:
+        description: Usuario de GitHub a auditar (vacío para auditar todos).
+        type: string
+        default: ""
+      uatu_tools_ref:
+        description: Tag o commit de uatu-tools.
+        type: string
+        default: main
+    secrets:
+      clave_publica:
+        description: Clave pública del docente (verificación de firmas).
+        required: true
+      clave_privada:
+        description: Clave privada del docente (descifrado de la bitácora).
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  auditar:
+    name: Auditoría de la sesión
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Clonar el repositorio completo
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Descargar las ramas de auditoría
+        run: git fetch origin '+refs/heads/uatu-audit/*:refs/remotes/origin/uatu-audit/*'
+
+      - name: Instalar uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+
+      - name: Instalar uatu-audit (desde git)
+        env:
+          REF: ${{ inputs.uatu_tools_ref }}
+        run: |
+          uv tool install "git+https://github.com/INGCOM-UNRN-P1/uatu-tools@${REF}"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Ejecutar la auditoría
+        env:
+          TEACHER_VERIFY_KEY: ${{ secrets.clave_publica }}
+          TEACHER_DECRYPT_KEY: ${{ secrets.clave_privada }}
+          TARGET_USER: ${{ inputs.target_user }}
+        run: |
+          umask 077
+          KEY_FILE="$(mktemp)"
+          trap 'rm -f "$KEY_FILE"' EXIT
+          printf '%s\n' "$TEACHER_DECRYPT_KEY" > "$KEY_FILE"
+
+          set +e
+          uatu-audit \
+            --repo . \
+            --teacher-key "$TEACHER_VERIFY_KEY" \
+            --decrypt-key "$KEY_FILE" \
+            --user "$TARGET_USER" \
+            --md-out uatu_report.md \
+            --json-out uatu_report.json
+          STATUS=$?
+          set -e
+
+          cat uatu_report.md >> "$GITHUB_STEP_SUMMARY"
+          case "$STATUS" in
+            0) echo "Auditoría limpia." ;;
+            2) echo "::warning title=uatu::Cadena íntegra con alertas heurísticas (ver el reporte)." ;;
+            *) echo "::error title=uatu::Falla de integridad criptográfica (código $STATUS)."; exit "$STATUS" ;;
+          esac
+
+      - name: Publicar el reporte
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reporte-uatu
+          path: |
+            uatu_report.md
+            uatu_report.json
+          if-no-files-found: ignore

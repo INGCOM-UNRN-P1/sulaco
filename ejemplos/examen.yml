@@ -1,0 +1,18 @@
+# Copiar en .github/workflows/ del repositorio del examen supervisado con uatu.
+name: Auditoría forense
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_user:
+        description: Usuario de GitHub a auditar (vacío para auditar todos)
+        default: ""
+
+jobs:
+  auditar:
+    uses: INGCOM-UNRN-P1/sulaco/.github/workflows/proctoring.yml@v0.1.0
+    with:
+      target_user: ${{ inputs.target_user }}
+    secrets:
+      clave_publica: ${{ secrets.UATU_TEACHER_PUBLIC_KEY }}
+      clave_privada: ${{ secrets.UATU_TEACHER_PRIVATE_KEY }}
