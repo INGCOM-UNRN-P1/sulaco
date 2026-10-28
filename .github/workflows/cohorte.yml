@@ -1,0 +1,124 @@
+# Planilla de seguimiento de una cohorte de GitHub Classroom (sulaco §cohorte).
+#
+# Workflow reutilizable para un repositorio PRIVADO de los docentes (no el de la consigna):
+#
+#   on:
+#     workflow_dispatch:
+#     schedule:
+#       - cron: "0 9 * * 1"      # los lunes
+#   jobs:
+#     cohorte:
+#       uses: INGCOM-UNRN-P1/sulaco/.github/workflows/cohorte.yml@v0.2.0
+#       permissions:
+#         contents: read
+#       with:
+#         organizacion: INGCOM-UNRN-P1-2026
+#         prefijo: tp1
+#         ruta: src
+#         fecha_limite: "2026-11-02T23:59-03:00"
+#       secrets:
+#         token: ${{ secrets.CLASSROOM_TOKEN }}   # lectura de los repos de la organización
+#
+# Clona los repos `<prefijo>-<usuario>` de la organización, corre `dredd cohorte` (ripley en
+# cada entrega) y deja la planilla (cohorte.csv, .md y .json) en el resumen del job y como
+# artefacto. Ambos son visibles sólo para quien tiene acceso al repositorio de los docentes;
+# GitHub Pages no se usa porque en un repo privado de una organización gratuita es público.
+#
+# Seguridad: el token sólo existe en el paso que clona y se quita de cada .git antes de correr
+# ripley, que compila y ejecuta código de los alumnos; ese job tiene permisos de solo lectura.
+name: Seguimiento de la cohorte
+
+on:
+  workflow_call:
+    inputs:
+      organizacion:
+        description: Organización de GitHub Classroom con los repos de la consigna.
+        type: string
+        required: true
+      prefijo:
+        description: Prefijo de los repos de la consigna (tp1 para tp1-usuario).
+        type: string
+        required: true
+      ruta:
+        description: Archivo o carpeta a verificar dentro de cada repo.
+        type: string
+        default: "."
+      perfil_ripley:
+        description: Rigurosidad de ripley (strict, relaxed o exam).
+        type: string
+        default: strict
+      fecha_limite:
+        description: Fecha límite ISO 8601 con zona horaria para calcular el atraso (vacío, sin atraso).
+        type: string
+        default: ""
+      mother_ref:
+        description: Tag o commit de mother (el manifiesto fija el de cada herramienta).
+        type: string
+        default: main
+    secrets:
+      token:
+        description: Token con lectura de los repos de la organización (los de los alumnos son privados).
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  cohorte:
+    name: Planilla de la cohorte
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Instalar uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Herramientas del sistema
+        run: sudo apt-get install -y --no-install-recommends gcc gdb valgrind
+
+      - name: Instalar ripley y dredd con mother (desde git)
+        env:
+          MOTHER_REF: ${{ inputs.mother_ref }}
+        run: |
+          for perfil in estudiante docente; do
+            uvx --from "git+https://github.com/INGCOM-UNRN-P1/mother@${MOTHER_REF}" mother instalar --perfil "$perfil"
+          done
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Clonar las entregas
+        env:
+          GH_TOKEN: ${{ secrets.token }}
+          ORG: ${{ inputs.organizacion }}
+          PREFIJO: ${{ inputs.prefijo }}
+        run: |
+          mkdir -p entregas
+          gh api --paginate "orgs/$ORG/repos?per_page=100&type=all" --jq '.[].name' \
+            | grep -E "^${PREFIJO}-" | sort > repos.txt || true
+          echo "$(wc -l < repos.txt) repos con el prefijo ${PREFIJO}-"
+          while read -r nombre; do
+            git clone --quiet "https://x-access-token:${GH_TOKEN}@github.com/${ORG}/${nombre}.git" "entregas/${nombre}"
+            # El token no queda en .git: el paso siguiente ejecuta código de los alumnos.
+            git -C "entregas/${nombre}" remote set-url origin "https://github.com/${ORG}/${nombre}.git"
+          done < repos.txt
+
+      - name: Planilla con dredd
+        env:
+          RUTA: ${{ inputs.ruta }}
+          PERFIL: ${{ inputs.perfil_ripley }}
+          PREFIJO: ${{ inputs.prefijo }}
+          FECHA: ${{ inputs.fecha_limite }}
+        run: |
+          args=(cohorte entregas --ruta "$RUTA" --perfil "$PERFIL" --prefijo "${PREFIJO}-" -o informe)
+          if [ -n "$FECHA" ]; then args+=(--fecha-limite "$FECHA"); fi
+          dredd "${args[@]}"
+          cat informe/cohorte.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: cohorte-${{ inputs.prefijo }}
+          path: informe/
+          retention-days: 30
+          if-no-files-found: ignore

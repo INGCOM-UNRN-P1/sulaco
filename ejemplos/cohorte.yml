@@ -1,0 +1,21 @@
+# Copiar en .github/workflows/ de un repositorio PRIVADO de los docentes (no en la consigna).
+# El secreto CLASSROOM_TOKEN es un token de solo lectura de los repos de la organización.
+name: Seguimiento de la cohorte
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 9 * * 1"
+
+jobs:
+  cohorte:
+    uses: INGCOM-UNRN-P1/sulaco/.github/workflows/cohorte.yml@v0.2.0
+    permissions:
+      contents: read
+    with:
+      organizacion: INGCOM-UNRN-P1-2026
+      prefijo: tp1
+      ruta: src
+      fecha_limite: "2026-11-02T23:59-03:00"
+    secrets:
+      token: ${{ secrets.CLASSROOM_TOKEN }}

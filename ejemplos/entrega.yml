@@ -7,7 +7,7 @@ on:
 
 jobs:
   evaluar:
-    uses: INGCOM-UNRN-P1/sulaco/.github/workflows/evaluar.yml@v0.1.0
+    uses: INGCOM-UNRN-P1/sulaco/.github/workflows/evaluar.yml@v0.2.0
     permissions:
       contents: read
       pull-requests: write

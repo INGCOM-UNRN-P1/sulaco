@@ -2,18 +2,27 @@
 #
 # Workflow reutilizable: el repo de la entrega (GitHub Classroom) lo llama con
 #
+#   on: [push, pull_request]
 #   jobs:
 #     evaluar:
-#       uses: INGCOM-UNRN-P1/sulaco/.github/workflows/evaluar.yml@v0.1.0
+#       uses: INGCOM-UNRN-P1/sulaco/.github/workflows/evaluar.yml@v0.2.0
 #       permissions:
 #         contents: read
 #         pull-requests: write      # solo si comentar: true
 #         security-events: write    # solo si sarif: true
 #
-# Instala las herramientas del perfil con mother (siempre desde git), corre
-# `ripley check` sobre la entrega y publica la devolución en el resumen del
-# job; en los pull requests (p. ej. el de feedback de Classroom) también como
-# comentario. Con `bloqueante: true` el job falla si ripley encuentra errores.
+# Tres jobs, para que el código del alumno nunca corra con permisos de escritura:
+#
+#   evaluar   instala el perfil con mother, corre `ripley check` UNA vez (devolución en
+#             Markdown y SARIF) y la publica en el resumen del job y como anotaciones sobre
+#             las líneas. Es el único que ejecuta código del alumno: token de solo lectura
+#             (`contents: read`) y el checkout no guarda credenciales en .git.
+#   comentar  en los pull requests (el de feedback de Classroom), un único comentario que se
+#             actualiza en cada push. No hace checkout: sólo lee el artefacto de `evaluar`.
+#   sarif     sube el SARIF a GitHub Code Scanning (requiere Advanced Security en repos
+#             privados; las anotaciones de `evaluar` funcionan siempre).
+#
+# Con `bloqueante: true` el job `evaluar` falla si ripley encuentra errores según el perfil.
 name: Evaluar entrega
 
 on:
@@ -36,11 +45,15 @@ on:
         type: string
         default: main
       comentar:
-        description: Publicar la devolución como comentario en los pull requests.
+        description: Publicar la devolución como comentario en los pull requests (uno solo, actualizado en cada push).
+        type: boolean
+        default: true
+      anotaciones:
+        description: Marcar las observaciones sobre las líneas del código (funciona sin Code Scanning).
         type: boolean
         default: true
       sarif:
-        description: Subir los hallazgos como SARIF (anotaciones en el código).
+        description: Subir los hallazgos como SARIF a GitHub Code Scanning.
         type: boolean
         default: false
       bloqueante:
@@ -48,15 +61,32 @@ on:
         type: boolean
         default: false
 
-permissions:
-  contents: read
+# Sin `permissions:` a nivel del workflow: en uno reutilizable sólo pueden recortar lo que
+# otorga quien llama, y con `contents: read` acá el job `comentar` se quedaba sin
+# `pull-requests: write` aunque el repo de la consigna lo diera. Cada job declara o hereda
+# lo suyo: `evaluar` se recorta a lectura; `comentar` y `sarif` usan lo que otorgue el
+# llamador (y no piden más, para no romper a quien no los usa).
 
 jobs:
   evaluar:
     name: Devolución de ripley
     runs-on: ubuntu-24.04
+    # Aunque el repo que llama otorgue más, este job (el que compila y ejecuta el código del
+    # alumno) sólo puede leer.
+    permissions:
+      contents: read
+    outputs:
+      codigo: ${{ steps.ripley.outputs.codigo }}
     steps:
+      - name: Rechazar pull_request_target
+        if: github.event_name == 'pull_request_target'
+        run: |
+          echo "::error title=sulaco::evaluar.yml ejecuta el código de la entrega: no se puede usar con pull_request_target (correría código ajeno con los secretos del repositorio). Usá pull_request."
+          exit 1
+
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Instalar uv
         uses: astral-sh/setup-uv@v6
@@ -84,7 +114,7 @@ jobs:
           PERFIL: ${{ inputs.perfil_ripley }}
         run: |
           set +e
-          ripley check "$RUTA" --profile "$PERFIL" --md devolucion.md --quiet
+          ripley check "$RUTA" --profile "$PERFIL" --md devolucion.md --sarif ripley.sarif --quiet
           echo "codigo=$?" >> "$GITHUB_OUTPUT"
           set -e
           if [ -s devolucion.md ]; then
@@ -93,25 +123,23 @@ jobs:
             echo "ripley no generó la devolución (ver el log del paso)." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: SARIF para anotaciones en el código
-        if: inputs.sarif
-        env:
-          RUTA: ${{ inputs.ruta }}
-          PERFIL: ${{ inputs.perfil_ripley }}
-        run: ripley check "$RUTA" --profile "$PERFIL" --format sarif --exit-zero > ripley.sarif
-
-      - uses: github/codeql-action/upload-sarif@v3
-        if: inputs.sarif
-        with:
-          sarif_file: ripley.sarif
-          category: ripley
-
-      - name: Comentar en el pull request
-        if: inputs.comentar && github.event_name == 'pull_request' && hashFiles('devolucion.md') != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-        run: gh pr comment "$PR" --body-file devolucion.md --repo "$GITHUB_REPOSITORY"
+      - name: Anotaciones sobre las líneas
+        if: inputs.anotaciones && hashFiles('ripley.sarif') != ''
+        # GitHub muestra hasta 10 anotaciones de cada nivel por paso: van primero las más graves.
+        run: |
+          python3 - <<'PY'
+          import json
+          datos = json.load(open("ripley.sarif", encoding="utf-8"))
+          orden = {"error": 0, "warning": 1, "note": 2}
+          comando = {"error": "error", "warning": "warning", "note": "notice"}
+          resultados = sorted(datos["runs"][0]["results"], key=lambda r: orden.get(r.get("level"), 3))
+          for r in resultados:
+              lugar = r["locations"][0]["physicalLocation"]
+              texto = r["message"]["text"].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+              archivo = lugar["artifactLocation"]["uri"].replace(",", "%2C").replace(":", "%3A")
+              print(f"::{comando.get(r.get('level'), 'notice')} file={archivo},line={lugar['region']['startLine']},"
+                    f"title={r['ruleId']}::{texto}")
+          PY
 
       - uses: actions/upload-artifact@v7
         if: always()
@@ -124,6 +152,60 @@ jobs:
 
       - name: Resultado
         if: inputs.bloqueante && steps.ripley.outputs.codigo != '0'
+        env:
+          CODIGO: ${{ steps.ripley.outputs.codigo }}
         run: |
-          echo "::error title=ripley::La entrega tiene errores (código ${{ steps.ripley.outputs.codigo }}); ver la devolución."
+          echo "::error title=ripley::La entrega tiene errores (código ${CODIGO}); ver la devolución."
           exit 1
+
+  comentar:
+    name: Comentario en el pull request
+    needs: evaluar
+    # Sólo en PRs del mismo repositorio: desde un fork el token no puede escribir.
+    if: >-
+      always() && inputs.comentar && github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v7
+        continue-on-error: true  # si `evaluar` falló antes de generar la devolución
+        with:
+          name: devolucion-ripley
+
+      - name: Publicar o actualizar la devolución
+        if: hashFiles('devolucion.md') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          marca='<!-- sulaco:devolucion -->'
+          { echo "$marca"; cat devolucion.md; } > comentario.md
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+                 --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marca\"))) | .id" | tail -n 1)
+          if [ -n "$id" ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F body=@comentario.md > /dev/null
+          else
+            gh pr comment "$PR" --body-file comentario.md --repo "$GITHUB_REPOSITORY"
+          fi
+
+  sarif:
+    name: GitHub Code Scanning
+    needs: evaluar
+    if: always() && inputs.sarif
+    runs-on: ubuntu-24.04
+    steps:
+      # El código sólo se lee (para ubicar las líneas); no se compila ni se ejecuta acá.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v7
+        continue-on-error: true
+        with:
+          name: devolucion-ripley
+
+      - uses: github/codeql-action/upload-sarif@v3
+        if: hashFiles('ripley.sarif') != ''
+        with:
+          sarif_file: ripley.sarif
+          category: ripley

@@ -26,16 +26,65 @@ def _pasos(datos: dict):
 
 
 def test_hay_workflows():
-    assert {p.name for p in REUTILIZABLES} == {"evaluar.yml", "proctoring.yml"}
+    assert {p.name for p in REUTILIZABLES} == {"cohorte.yml", "evaluar.yml", "proctoring.yml"}
+
+
+EJECUTA_CODIGO = re.compile(r"\b(ripley|dredd|make|gcc|mother)\b")
 
 
 @pytest.mark.parametrize("ruta", REUTILIZABLES, ids=lambda p: p.name)
 def test_es_reutilizable_y_con_permisos_minimos(ruta):
     datos = _cargar(ruta)
     assert "workflow_call" in datos["on"]
-    assert datos["permissions"] == {"contents": "read"}
+    # A nivel del workflow, lectura o nada (evaluar.yml: nada, para que `comentar` herede del llamador).
+    assert datos.get("permissions") in (None, {"contents": "read"})
     for nombre, entrada in datos["on"]["workflow_call"].get("inputs", {}).items():
         assert entrada.get("description"), f"{nombre} sin descripción"
+
+
+@pytest.mark.parametrize("ruta", REUTILIZABLES, ids=lambda p: p.name)
+def test_el_codigo_de_la_entrega_corre_con_token_de_solo_lectura(ruta):
+    """Un job que compila o ejecuta código (ripley, dredd, make, gcc) declara permisos de lectura,
+    sin escritura aunque el llamador otorgue más, y su checkout no guarda credenciales (Ola 25)."""
+    for nombre, trabajo in _cargar(ruta)["jobs"].items():
+        pasos = trabajo.get("steps", [])
+        if not any(EJECUTA_CODIGO.search(p.get("run", "")) for p in pasos):
+            continue
+        assert trabajo.get("permissions") == {"contents": "read"}, nombre
+        for paso in pasos:
+            if str(paso.get("uses", "")).startswith("actions/checkout"):
+                assert paso.get("with", {}).get("persist-credentials") is False, nombre
+
+
+@pytest.mark.parametrize("ruta", REUTILIZABLES, ids=lambda p: p.name)
+def test_los_secretos_nunca_llegan_al_codigo_de_los_alumnos(ruta):
+    """Ni en el env del job ni en un paso que compile o ejecute código."""
+    for trabajo in _cargar(ruta)["jobs"].values():
+        assert "secrets." not in str(trabajo.get("env", {}))
+        for paso in trabajo.get("steps", []):
+            if re.search(r"\b(ripley|dredd|make|gcc)\b", paso.get("run", "")):
+                assert "secrets." not in str(paso.get("env", {})), paso.get("name")
+
+
+def test_evaluar_separa_la_ejecucion_de_la_publicacion():
+    jobs = _cargar(RAIZ / ".github" / "workflows" / "evaluar.yml")["jobs"]
+    assert set(jobs) == {"evaluar", "comentar", "sarif"}
+    for publicador in ("comentar", "sarif"):
+        assert jobs[publicador]["needs"] == "evaluar"
+        assert not any(EJECUTA_CODIGO.search(p.get("run", "")) for p in jobs[publicador]["steps"])
+    assert "pull_request_target" in jobs["evaluar"]["steps"][0]["if"]
+    script = next(p["run"] for p in jobs["comentar"]["steps"] if "PATCH" in p.get("run", ""))
+    assert "sulaco:devolucion" in script  # un solo comentario, actualizado en cada push
+    paso_ripley = next(p for p in jobs["evaluar"]["steps"] if p.get("id") == "ripley")
+    assert "--sarif ripley.sarif" in paso_ripley["run"] and paso_ripley["run"].count("ripley check") == 1
+
+
+def test_cohorte_quita_el_token_antes_de_ejecutar_codigo():
+    pasos = _cargar(RAIZ / ".github" / "workflows" / "cohorte.yml")["jobs"]["cohorte"]["steps"]
+    clonar = next(p for p in pasos if p.get("name") == "Clonar las entregas")
+    assert "secrets.token" in clonar["env"]["GH_TOKEN"] and "remote set-url origin" in clonar["run"]
+    dredd = next(p for p in pasos if "dredd" in p.get("run", ""))
+    assert "secrets." not in str(dredd.get("env", {}))
 
 
 @pytest.mark.parametrize("ruta", REUTILIZABLES, ids=lambda p: p.name)
