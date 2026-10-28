@@ -1,4 +1,5 @@
 # Copiar en .github/workflows/ de un repositorio PRIVADO de los docentes (no en la consigna).
+# Los lunes deja la planilla y conceptos.md, el informe semanal anónimo de qué reforzar en clase.
 # El secreto CLASSROOM_TOKEN es un token de solo lectura de los repos de la organización.
 name: Seguimiento de la cohorte
 

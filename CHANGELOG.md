@@ -8,6 +8,7 @@ versiones según [SemVer](https://semver.org/lang/es/).
 ### Agregado
 
 - `cohorte.yml`: planilla de seguimiento de una cohorte de Classroom con `dredd cohorte`, para un repo privado de los docentes (Ola 25).
+- `cohorte.yml`: el artefacto incluye `conceptos.md`, el informe semanal anónimo de conceptos con mayor índice de error (Ola 26).
 - `evaluar.yml`: anotaciones sobre las líneas (`anotaciones: true`), que funcionan sin Code Scanning; un único comentario en el PR, actualizado en cada push; ripley corre una sola vez (`--md` y `--sarif`).
 
 ### Seguridad

@@ -50,11 +50,12 @@ Entradas de `evaluar.yml`:
 
 Copiar [`ejemplos/cohorte.yml`](ejemplos/cohorte.yml) en un repositorio **privado** de los
 docentes (no en la consigna) y crear el secreto `CLASSROOM_TOKEN`, un token de solo lectura de
-los repos de la organización. Cada corrida (a mano o los lunes) deja `cohorte.csv`, `.md` y
-`.json` como artefacto y el resumen en la página del job: estado de cada entrega (aprobada, con
+los repos de la organización. Cada corrida (a mano o los lunes) deja `cohorte.csv`, `.md`, `.json` y `conceptos.md` como artefacto y el resumen en la página del job: estado de cada entrega (aprobada, con
 errores, no compila, sin entrega), las observaciones más frecuentes con enlace al apunte y los
 tiempos (último commit y atraso respecto de `fecha_limite`, orientativo porque la fecha del
-commit la fija el alumno). Sólo lo ve quien tiene acceso a ese repositorio; no se publica en
+commit la fija el alumno). `conceptos.md` es el informe semanal anónimo: el índice de error de cada
+concepto (punteros, memoria, cadenas…) y las reglas más incumplidas, sin nombres, para
+compartir con todo el equipo. Sólo lo ve quien tiene acceso a ese repositorio; no se publica en
 GitHub Pages, que en un repo privado de una organización gratuita es público.
 
 ## Seguridad
