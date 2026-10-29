@@ -12,6 +12,7 @@ entrega o de examen los llama con `uses:`; las herramientas se instalan
 | [`evaluar.yml`](.github/workflows/evaluar.yml) | Instala el perfil estudiante con mother, corre `ripley check` una vez sobre la entrega y publica la devolución (con secciones colapsables y qué estudiar del apunte) en el resumen del job, como anotaciones sobre las líneas y como un único comentario en el pull request, actualizado en cada push. Opcional: SARIF para Code Scanning y modo bloqueante. | [`ejemplos/entrega.yml`](ejemplos/entrega.yml) |
 | [`cohorte.yml`](.github/workflows/cohorte.yml) | En un repo privado de los docentes: clona los repos de una consigna de Classroom y arma con `dredd cohorte` la planilla de seguimiento (estado de cada entrega, observaciones frecuentes, tiempos). | [`ejemplos/cohorte.yml`](ejemplos/cohorte.yml) |
 | [`proctoring.yml`](.github/workflows/proctoring.yml) | Auditoría forense de un examen supervisado con `uatu-audit` (cadena firmada, alertas heurísticas). | [`ejemplos/examen.yml`](ejemplos/examen.yml) |
+| [`proctoring-audit.yml`](.github/workflows/proctoring-audit.yml) | Integridad de la sesión de uatu en cada push, sólo con la clave pública: las fallas de integridad dejan el commit en rojo; las alertas heurísticas se cuentan y su detalle queda para `proctoring.yml`. | [`ejemplos/examen-integridad.yml`](ejemplos/examen-integridad.yml) |
 
 El CI de integración de punta a punta del ecosistema (N-ECO-03) sigue en
 [p1-tools](https://github.com/INGCOM-UNRN-P1/p1-tools), que es donde están los
@@ -74,6 +75,9 @@ GitHub Pages, que en un repo privado de una organización gratuita es público.
   nunca interpoladas (sin inyección de comandos).
 - Las claves del docente de `proctoring.yml` se pasan como `secrets` y se
   escriben en un archivo temporal con `umask 077`.
+- `proctoring-audit.yml` vive en el repositorio del alumno, que puede leer sus secretos y
+  editar el workflow: por eso recibe sólo la clave pública, no descifra la evidencia, escapa los
+  mensajes antes de convertirlos en anotaciones y es una alarma temprana, no la auditoría.
 
 `tests/test_workflows.py` controla todo lo anterior (también que ningún job que ejecute código
 tenga permisos de escritura ni secretos); el CI además corre

@@ -26,7 +26,7 @@ def _pasos(datos: dict):
 
 
 def test_hay_workflows():
-    assert {p.name for p in REUTILIZABLES} == {"cohorte.yml", "evaluar.yml", "proctoring.yml"}
+    assert {p.name for p in REUTILIZABLES} == {"cohorte.yml", "evaluar.yml", "proctoring.yml", "proctoring-audit.yml"}
 
 
 EJECUTA_CODIGO = re.compile(r"\b(ripley|dredd|make|gcc|mother)\b")
@@ -119,3 +119,15 @@ def test_los_ejemplos_usan_entradas_declaradas(ejemplo):
         assert set(trabajo.get("with", {})) <= set(llamado.get("inputs", {}))
         requeridos = {n for n, s in llamado.get("secrets", {}).items() if s.get("required")}
         assert requeridos <= set(trabajo.get("secrets", {}))
+
+
+def test_la_integridad_por_push_no_usa_la_clave_privada():
+    """proctoring-audit.yml corre en el repositorio del alumno: sólo la clave pública, sin descifrar
+    la evidencia, y las alertas heurísticas no se publican salvo `detalle: true` (Ola 28)."""
+    datos = _cargar(RAIZ / ".github" / "workflows" / "proctoring-audit.yml")
+    assert set(datos["on"]["workflow_call"]["secrets"]) == {"clave_publica"}
+    texto = (RAIZ / ".github" / "workflows" / "proctoring-audit.yml").read_text(encoding="utf-8")
+    assert "--decrypt-key" not in texto.split("name: Integridad")[1]
+    assert datos["on"]["workflow_call"]["inputs"]["detalle"]["default"] is False
+    verificar = next(p for p in _pasos(datos) if p.get("name") == "Verificar la cadena")
+    assert "%0A" in verificar["run"]  # los mensajes se escapan antes de volverlos anotaciones

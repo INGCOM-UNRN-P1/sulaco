@@ -1,0 +1,13 @@
+# Copiar en .github/workflows/ del repositorio del examen supervisado con uatu, junto a examen.yml.
+# Verifica la cadena firmada en cada push con la clave pública del docente (sin la privada).
+name: Integridad de la sesión
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  integridad:
+    uses: INGCOM-UNRN-P1/sulaco/.github/workflows/proctoring-audit.yml@v0.2.0
+    secrets:
+      clave_publica: ${{ secrets.UATU_TEACHER_PUBLIC_KEY }}

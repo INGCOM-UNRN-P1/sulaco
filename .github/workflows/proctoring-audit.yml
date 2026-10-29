@@ -1,0 +1,136 @@
+# Control de integridad de un examen supervisado con uatu en cada push (sulaco §proctoring).
+#
+# Complementa a proctoring.yml (la auditoría forense que lanza el docente, con la clave
+# privada para descifrar la evidencia): este corre solo, en cada push, y verifica la
+# cadena firmada de telemetría y el manifiesto con la clave PÚBLICA del docente. Sin la
+# privada no descifra nada, así que puede vivir en el repositorio del alumno.
+#
+#   on:
+#     push:
+#       branches: [main]
+#   jobs:
+#     integridad:
+#       uses: INGCOM-UNRN-P1/sulaco/.github/workflows/proctoring-audit.yml@v0.2.0
+#       secrets:
+#         clave_publica: ${{ secrets.UATU_TEACHER_PUBLIC_KEY }}
+#
+# Una falla de integridad (cadena o manifiesto alterados, lotes faltantes, consigna
+# liberada antes de hora) deja el commit en rojo y la lista en el resumen del run. Las
+# alertas heurísticas (pegados, foco, saltos de tiempo) sólo se cuentan: el detalle
+# queda para la auditoría del docente, salvo `detalle: true`. El alumno puede editar
+# este workflow en su repositorio: es una alarma temprana, no reemplaza a proctoring.yml.
+name: Integridad de la sesión (uatu)
+
+on:
+  workflow_call:
+    inputs:
+      detalle:
+        description: Publicar el reporte completo (alertas heurísticas incluidas) en el resumen y como artefacto.
+        type: boolean
+        default: false
+      uatu_tools_ref:
+        description: Tag o commit de uatu-tools.
+        type: string
+        default: main
+    secrets:
+      clave_publica:
+        description: Clave pública Ed25519 del docente (verificación de firmas).
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: uatu-integridad-${{ github.repository }}
+  cancel-in-progress: true
+
+jobs:
+  integridad:
+    name: Cadena firmada de la sesión
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Clonar el repositorio completo
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Descargar las ramas de telemetría
+        id: ramas
+        run: |
+          git fetch origin '+refs/heads/uatu-audit/*:refs/remotes/origin/uatu-audit/*'
+          if git for-each-ref --format='%(refname)' refs/remotes/origin/uatu-audit/ | grep -q .; then
+            echo "hay=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hay=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=uatu::Todavía no hay ramas de telemetría: la sesión no empezó."
+            echo "Sin sesión de uatu todavía: nada que verificar." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Instalar uv
+        if: steps.ramas.outputs.hay == 'true'
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+
+      - name: Instalar uatu-audit (desde git)
+        if: steps.ramas.outputs.hay == 'true'
+        env:
+          REF: ${{ inputs.uatu_tools_ref }}
+        run: |
+          uv tool install "git+https://github.com/INGCOM-UNRN-P1/uatu-tools@${REF}"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verificar la cadena
+        if: steps.ramas.outputs.hay == 'true'
+        env:
+          TEACHER_VERIFY_KEY: ${{ secrets.clave_publica }}
+          DETALLE: ${{ inputs.detalle }}
+        run: |
+          REPORTE="$RUNNER_TEMP/uatu"
+          mkdir -p "$REPORTE"
+          set +e
+          uatu-audit --repo . --teacher-key "$TEACHER_VERIFY_KEY" \
+            --md-out "$REPORTE/uatu_report.md" --json-out "$REPORTE/uatu_report.json"
+          STATUS=$?
+          set -e
+
+          python3 - "$REPORTE/uatu_report.json" "$DETALLE" "$REPORTE/anotaciones" <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, sys
+          datos = json.load(open(sys.argv[1], encoding="utf-8"))
+          errores, avisos = datos.get("errors", []), datos.get("warnings", [])
+          # Los mensajes pueden traer nombres de archivo de la rama: escapados, no inyectan comandos.
+          escapar = lambda t: str(t).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          with open(sys.argv[3], "w", encoding="utf-8") as f:
+              for e in errores:
+                  f.write(f"::error title=uatu::{escapar(e)}\n")
+          print(f"## Integridad de la sesión: {datos.get('status')}\n")
+          print(f"Sesiones: {len(datos.get('sessions', []))} · fallas de integridad: {len(errores)} · "
+                f"alertas heurísticas: {len(avisos)}\n")
+          for e in errores:
+              print(f"- ❌ {e}")
+          if sys.argv[2] == "true":
+              for a in avisos:
+                  print(f"- ⚠️ {a}")
+          elif avisos:
+              print("\nEl detalle de las alertas heurísticas queda para la auditoría del docente (proctoring.yml).")
+          PY
+
+          cat "$REPORTE/anotaciones"
+          if [ "$DETALLE" = "true" ]; then
+            cat "$REPORTE/uatu_report.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          case "$STATUS" in
+            0) echo "Cadena íntegra, sin alertas." ;;
+            2) echo "::warning title=uatu::Cadena íntegra con alertas heurísticas." ;;
+            *) echo "::error title=uatu::Falla de integridad (código $STATUS)."; exit "$STATUS" ;;
+          esac
+
+      - name: Publicar el reporte
+        if: always() && inputs.detalle && steps.ramas.outputs.hay == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: integridad-uatu
+          path: ${{ runner.temp }}/uatu/
+          if-no-files-found: ignore
