@@ -86,3 +86,7 @@ tenga permisos de escritura ni secretos); el CI además corre
 ## Licencia
 
 GPL-3.0-or-later (ver `LICENSE`).
+
+## Contacto
+
+Martín René Vilugrón - mrvilugron@unrn.edu.ar - Ingeniería en Computación UNRN Andina
